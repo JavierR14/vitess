@@ -80,7 +80,8 @@ const (
 )
 
 var (
-	tabletHostname = flag.String("tablet_hostname", "", "if not empty, this hostname will be assumed instead of trying to resolve it")
+	tabletHostname         = flag.String("tablet_hostname", "", "if not empty, this hostname will be assumed instead of trying to resolve it")
+	masterDemoteTabletType = flag.String("tablet_externally_reparented_demote_type", "REPLICA", "tablet type to demote master in the topology.")
 )
 
 // ActionAgent is the main class for the agent.
@@ -170,6 +171,14 @@ type ActionAgent struct {
 	// It's only set once in NewActionAgent() and never modified after that.
 	orc *orcClient
 
+	// mrjob is an optional reference to the master repair job that is run if
+	// MasterCheckFreq flag > 0
+	// MasterCheckFreq flag > 0
+	mrjob *masterRepairJob
+
+	// masterDemoteTabletType specifies the tablet type when the master is demoted
+	masterDemoteTabletType topodatapb.TabletType
+
 	// mutex protects all the following fields (that start with '_'),
 	// only hold the mutex to update the fields, nothing else.
 	mutex sync.Mutex
@@ -252,18 +261,24 @@ func NewActionAgent(
 		return nil, err
 	}
 
+	demoteTabletType, err := topoproto.ParseTabletType(*masterDemoteTabletType)
+	if err != nil {
+		return nil, err
+	}
+
 	agent = &ActionAgent{
-		QueryServiceControl: queryServiceControl,
-		HealthReporter:      health.DefaultAggregator,
-		batchCtx:            batchCtx,
-		TopoServer:          ts,
-		TabletAlias:         tabletAlias,
-		Cnf:                 mycnf,
-		MysqlDaemon:         mysqld,
-		DBConfigs:           dbcfgs,
-		History:             history.New(historyLength),
-		_healthy:            fmt.Errorf("healthcheck not run yet"),
-		orc:                 orc,
+		QueryServiceControl:    queryServiceControl,
+		HealthReporter:         health.DefaultAggregator,
+		batchCtx:               batchCtx,
+		TopoServer:             ts,
+		TabletAlias:            tabletAlias,
+		Cnf:                    mycnf,
+		MysqlDaemon:            mysqld,
+		DBConfigs:              dbcfgs,
+		History:                history.New(historyLength),
+		_healthy:               fmt.Errorf("healthcheck not run yet"),
+		orc:                    orc,
+		masterDemoteTabletType: demoteTabletType,
 	}
 	// Sanity check for inconsistent flags
 	if agent.Cnf == nil && *restoreFromBackup {
@@ -369,18 +384,19 @@ func NewTestActionAgent(batchCtx context.Context, ts *topo.Server, tabletAlias *
 		panic(vterrors.Wrap(err, "failed reading tablet"))
 	}
 	agent := &ActionAgent{
-		QueryServiceControl: tabletservermock.NewController(),
-		UpdateStream:        binlog.NewUpdateStreamControlMock(),
-		HealthReporter:      health.DefaultAggregator,
-		batchCtx:            batchCtx,
-		TopoServer:          ts,
-		TabletAlias:         tabletAlias,
-		Cnf:                 nil,
-		MysqlDaemon:         mysqlDaemon,
-		DBConfigs:           &dbconfigs.DBConfigs{},
-		VREngine:            vreplication.NewEngine(ts, tabletAlias.Cell, mysqlDaemon, binlogplayer.NewFakeDBClient, ti.DbName()),
-		History:             history.New(historyLength),
-		_healthy:            fmt.Errorf("healthcheck not run yet"),
+		QueryServiceControl:    tabletservermock.NewController(),
+		UpdateStream:           binlog.NewUpdateStreamControlMock(),
+		HealthReporter:         health.DefaultAggregator,
+		batchCtx:               batchCtx,
+		TopoServer:             ts,
+		TabletAlias:            tabletAlias,
+		Cnf:                    nil,
+		MysqlDaemon:            mysqlDaemon,
+		DBConfigs:              &dbconfigs.DBConfigs{},
+		VREngine:               vreplication.NewEngine(ts, tabletAlias.Cell, mysqlDaemon, binlogplayer.NewFakeDBClient, ti.DbName()),
+		History:                history.New(historyLength),
+		_healthy:               fmt.Errorf("healthcheck not run yet"),
+		masterDemoteTabletType: topodatapb.TabletType_REPLICA,
 	}
 	if preStart != nil {
 		preStart(agent)
@@ -459,9 +475,6 @@ func (agent *ActionAgent) setTablet(tablet *topodatapb.Tablet) {
 	agent.mutex.Lock()
 	agent._tablet = proto.Clone(tablet).(*topodatapb.Tablet)
 	agent.mutex.Unlock()
-
-	// Notify the shard sync loop that the tablet state changed.
-	agent.notifyShardSync()
 }
 
 // Tablet reads the stored Tablet from the agent, protected by mutex.
@@ -700,6 +713,9 @@ func (agent *ActionAgent) Start(ctx context.Context, mysqlHost string, mysqlPort
 	// to make sure it and our tablet record are in sync.
 	agent.startShardSync()
 
+	// Start master repair job
+	agent.mrjob = startNewMasterRepairJob(agent.TopoServer, agent)
+
 	return nil
 }
 
@@ -728,6 +744,11 @@ func (agent *ActionAgent) Close() {
 // when you want to clean up an agent immediately.
 func (agent *ActionAgent) Stop() {
 	agent.stopShardSync()
+
+	if agent.mrjob != nil {
+		agent.mrjob.stop()
+	}
+
 	if agent.UpdateStream != nil {
 		agent.UpdateStream.Disable()
 	}
