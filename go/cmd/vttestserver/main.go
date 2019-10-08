@@ -32,6 +32,17 @@ import (
 	"vitess.io/vitess/go/vt/vttest"
 )
 
+var (
+	seed   vttest.SeedConfig
+	config vttest.Config
+	topo   topoFlags
+
+	basePort  int
+	protoTopo string
+	doSeed    bool
+	mycnf     string
+)
+
 type topoFlags struct {
 	cells     string
 	keyspaces string
@@ -40,50 +51,7 @@ type topoFlags struct {
 	rdonly    int
 }
 
-func (t *topoFlags) buildTopology() (*vttestpb.VTTestTopology, error) {
-	topo := &vttestpb.VTTestTopology{}
-	topo.Cells = strings.Split(t.cells, ",")
-
-	keyspaces := strings.Split(t.keyspaces, ",")
-	shardCounts := strings.Split(t.shards, ",")
-	if len(keyspaces) != len(shardCounts) {
-		return nil, fmt.Errorf("--keyspaces must be same length as --shards")
-	}
-
-	for i := range keyspaces {
-		name := keyspaces[i]
-		numshards, err := strconv.ParseInt(shardCounts[i], 10, 32)
-		if err != nil {
-			return nil, err
-		}
-
-		ks := &vttestpb.Keyspace{
-			Name:         name,
-			ReplicaCount: int32(t.replicas),
-			RdonlyCount:  int32(t.rdonly),
-		}
-
-		for _, shardname := range vttest.GetShardNames(int(numshards)) {
-			ks.Shards = append(ks.Shards, &vttestpb.Shard{
-				Name: shardname,
-			})
-		}
-
-		topo.Keyspaces = append(topo.Keyspaces, ks)
-	}
-
-	return topo, nil
-}
-
-func parseFlags() (config vttest.Config, env vttest.Environment, err error) {
-	var seed vttest.SeedConfig
-	var topo topoFlags
-
-	var basePort int
-	var protoTopo string
-	var doSeed bool
-	var mycnf string
-
+func init() {
 	flag.IntVar(&basePort, "port", 0,
 		"Port to use for vtcombo. If this is 0, a random port will be chosen.")
 
@@ -171,33 +139,72 @@ func parseFlags() (config vttest.Config, env vttest.Environment, err error) {
 	flag.StringVar(&config.TabletHostName, "tablet_hostname", "localhost", "The hostname to use for the tablet otherwise it will be derived from OS' hostname")
 
 	flag.BoolVar(&config.InitWorkflowManager, "workflow_manager_init", false, "Enable workflow manager")
+}
 
+func (t *topoFlags) buildTopology() (*vttestpb.VTTestTopology, error) {
+	topo := &vttestpb.VTTestTopology{}
+	topo.Cells = strings.Split(t.cells, ",")
+
+	keyspaces := strings.Split(t.keyspaces, ",")
+	shardCounts := strings.Split(t.shards, ",")
+	if len(keyspaces) != len(shardCounts) {
+		return nil, fmt.Errorf("--keyspaces must be same length as --shards")
+	}
+
+	for i := range keyspaces {
+		name := keyspaces[i]
+		numshards, err := strconv.ParseInt(shardCounts[i], 10, 32)
+		if err != nil {
+			return nil, err
+		}
+
+		ks := &vttestpb.Keyspace{
+			Name:         name,
+			ReplicaCount: int32(t.replicas),
+			RdonlyCount:  int32(t.rdonly),
+		}
+
+		for _, shardname := range vttest.GetShardNames(int(numshards)) {
+			ks.Shards = append(ks.Shards, &vttestpb.Shard{
+				Name: shardname,
+			})
+		}
+
+		topo.Keyspaces = append(topo.Keyspaces, ks)
+	}
+
+	return topo, nil
+}
+
+func initEnvironmentConfig() (vttest.Config, vttest.Environment, error) {
 	flag.Parse()
-
+	var env vttest.Environment
+	var err error
 	if basePort != 0 {
 		if config.DataDir == "" {
 			env, err = vttest.NewLocalTestEnv("", basePort)
 			if err != nil {
-				return
+				return config, nil, err
 			}
 		} else {
 			env, err = vttest.NewLocalTestEnvWithDirectory("", basePort, config.DataDir)
 			if err != nil {
-				return
+				return config, nil, err
 			}
 		}
 	}
 
 	if protoTopo == "" {
-		config.Topology, err = topo.buildTopology()
+		topology, err := topo.buildTopology()
+		config.Topology = topology
 		if err != nil {
-			return
+			return config, nil, err
 		}
 	} else {
 		var topology vttestpb.VTTestTopology
-		err = proto.UnmarshalText(protoTopo, &topology)
+		err := proto.UnmarshalText(protoTopo, &topology)
 		if err != nil {
-			return
+			return config, nil, err
 		}
 		if len(topology.Cells) == 0 {
 			topology.Cells = append(topology.Cells, "test")
@@ -213,7 +220,7 @@ func parseFlags() (config vttest.Config, env vttest.Environment, err error) {
 		config.ExtraMyCnf = strings.Split(mycnf, ":")
 	}
 
-	return
+	return config, env, nil
 }
 
 func main() {
@@ -232,7 +239,7 @@ func main() {
 }
 
 func runCluster() (*vttest.LocalCluster, error) {
-	config, env, err := parseFlags()
+	config, env, err := initEnvironmentConfig()
 	if err != nil {
 		log.Fatal(err)
 	}
