@@ -274,7 +274,9 @@
 			"Manual": false,
 			"Shard": 4,
 			"RetryMax": 0,
-			"Tags": []
+			"Tags": [
+				"square-fail"
+			]
 		},
 		"mysqlctl": {
 			"File": "mysqlctl.py",
