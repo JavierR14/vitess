@@ -132,6 +132,7 @@ func main() {
 	}
 
 	initDemoteHandler(agent)
+	initDNSPoller(agent)
 
 	servenv.OnClose(func() {
 		// stop the agent so that our topo entry gets pruned properly
