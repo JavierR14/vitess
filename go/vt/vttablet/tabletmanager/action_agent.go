@@ -173,7 +173,6 @@ type ActionAgent struct {
 
 	// mrjob is an optional reference to the master repair job that is run if
 	// MasterCheckFreq flag > 0
-	// MasterCheckFreq flag > 0
 	mrjob *masterRepairJob
 
 	// masterDemoteTabletType specifies the tablet type when the master is demoted
