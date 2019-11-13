@@ -175,8 +175,8 @@ type ActionAgent struct {
 	// MasterCheckFreq flag > 0
 	mrjob *masterRepairJob
 
-	// masterDemoteTabletType specifies the tablet type when the master is demoted
-	masterDemoteTabletType topodatapb.TabletType
+	// MasterDemoteTabletType specifies the tablet type when the master is demoted
+	MasterDemoteTabletType topodatapb.TabletType
 
 	// mutex protects all the following fields (that start with '_'),
 	// only hold the mutex to update the fields, nothing else.
@@ -277,7 +277,7 @@ func NewActionAgent(
 		History:                history.New(historyLength),
 		_healthy:               fmt.Errorf("healthcheck not run yet"),
 		orc:                    orc,
-		masterDemoteTabletType: demoteTabletType,
+		MasterDemoteTabletType: demoteTabletType,
 	}
 	// Sanity check for inconsistent flags
 	if agent.Cnf == nil && *restoreFromBackup {
@@ -395,7 +395,7 @@ func NewTestActionAgent(batchCtx context.Context, ts *topo.Server, tabletAlias *
 		VREngine:               vreplication.NewEngine(ts, tabletAlias.Cell, mysqlDaemon, binlogplayer.NewFakeDBClient, ti.DbName()),
 		History:                history.New(historyLength),
 		_healthy:               fmt.Errorf("healthcheck not run yet"),
-		masterDemoteTabletType: topodatapb.TabletType_REPLICA,
+		MasterDemoteTabletType: topodatapb.TabletType_REPLICA,
 	}
 	if preStart != nil {
 		preStart(agent)
