@@ -474,6 +474,9 @@ func (agent *ActionAgent) setTablet(tablet *topodatapb.Tablet) {
 	agent.mutex.Lock()
 	agent._tablet = proto.Clone(tablet).(*topodatapb.Tablet)
 	agent.mutex.Unlock()
+
+	// Notify the shard sync loop that the tablet state changed.
+	agent.notifyShardSync()
 }
 
 // Tablet reads the stored Tablet from the agent, protected by mutex.
