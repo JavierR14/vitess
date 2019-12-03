@@ -382,6 +382,12 @@ func NewTestActionAgent(batchCtx context.Context, ts *topo.Server, tabletAlias *
 	if err != nil {
 		panic(vterrors.Wrap(err, "failed reading tablet"))
 	}
+
+	demoteTabletType, err := topoproto.ParseTabletType(*masterDemoteTabletType)
+	if err != nil {
+		panic(vterrors.Wrapf(err, "failed parsing tablet type %s", *masterDemoteTabletType))
+	}
+
 	agent := &ActionAgent{
 		QueryServiceControl:    tabletservermock.NewController(),
 		UpdateStream:           binlog.NewUpdateStreamControlMock(),
@@ -395,7 +401,7 @@ func NewTestActionAgent(batchCtx context.Context, ts *topo.Server, tabletAlias *
 		VREngine:               vreplication.NewEngine(ts, tabletAlias.Cell, mysqlDaemon, binlogplayer.NewFakeDBClient, ti.DbName()),
 		History:                history.New(historyLength),
 		_healthy:               fmt.Errorf("healthcheck not run yet"),
-		MasterDemoteTabletType: topodatapb.TabletType_REPLICA,
+		MasterDemoteTabletType: demoteTabletType,
 	}
 	if preStart != nil {
 		preStart(agent)
@@ -422,6 +428,11 @@ func NewTestActionAgent(batchCtx context.Context, ts *topo.Server, tabletAlias *
 // within the vtcombo binary. It cannot be called concurrently,
 // as it changes the flags.
 func NewComboActionAgent(batchCtx context.Context, ts *topo.Server, tabletAlias *topodatapb.TabletAlias, vtPort, grpcPort int32, queryServiceControl tabletserver.Controller, dbcfgs *dbconfigs.DBConfigs, mysqlDaemon mysqlctl.MysqlDaemon, keyspace, shard, dbname, tabletType string) *ActionAgent {
+	demoteTabletType, err := topoproto.ParseTabletType(*masterDemoteTabletType)
+	if err != nil {
+		panic(vterrors.Wrapf(err, "failed parsing tablet type %s", *masterDemoteTabletType))
+	}
+
 	agent := &ActionAgent{
 		QueryServiceControl: queryServiceControl,
 		UpdateStream:        binlog.NewUpdateStreamControlMock(),
@@ -437,6 +448,7 @@ func NewComboActionAgent(batchCtx context.Context, ts *topo.Server, tabletAlias 
 		History:             history.New(historyLength),
 		_healthy:            fmt.Errorf("healthcheck not run yet"),
 	}
+	agent.MasterDemoteTabletType = demoteTabletType
 	agent.registerQueryRuleSources()
 
 	// Initialize the tablet.
