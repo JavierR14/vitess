@@ -32,6 +32,7 @@ cat <<EOF >> "${inputs_file}"
 /vt/bin/vtctld=${PREFIX}/bin/vtctld
 /vt/bin/vtgate=${PREFIX}/bin/vtgate
 /vt/bin/vttablet=${PREFIX}/bin/vttablet
+/vt/bin/vttablet=${PREFIX}/bin/vttestserver
 /vt/bin/vtworker=${PREFIX}/bin/vtworker
 /vt/src/vitess.io/vitess/config/=/etc/vitess
 /vt/src/vitess.io/vitess/web/vtctld2/app=${PREFIX}/lib/vitess/web/vtcld2
