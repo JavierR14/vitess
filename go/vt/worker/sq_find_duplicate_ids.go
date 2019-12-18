@@ -19,7 +19,6 @@ package worker
 import (
 	"fmt"
 	"html/template"
-	"strings"
 	"sync"
 	"time"
 
@@ -415,13 +414,14 @@ func (fdiw *FindDuplicateIdsWorker) findDuplicateIds(ctx context.Context) error 
 		return fmt.Errorf("can only handle a single PK column of type long currently")
 	}
 	sourceTableDefinition = proto.Clone(sourceTableDefinition).(*tabletmanagerdatapb.TableDefinition)
-	sourceTableDefinition.Columns = sourceTableDefinition.PrimaryKeyColumns
+	sourceTableDefinition.Columns = append(sourceTableDefinition.PrimaryKeyColumns, "customer_id", "token")
 
 	status.initialize(sourceTableDefinition)
 
 	// mu protects the context for cancelation, and firstError
 	mu := sync.Mutex{}
 	var firstError error
+	foundDupes := 0
 
 	ctx, cancelCopy := context.WithCancel(ctx)
 	defer cancelCopy()
@@ -475,8 +475,7 @@ func (fdiw *FindDuplicateIdsWorker) findDuplicateIds(ctx context.Context) error 
 				return
 			}
 
-			// Set up readers for the diff. There will be one reader for every
-			// source and destination shard.
+			// Set up readers. There will be one reader for every shard.
 			sourceReaders := make(map[string]ResultReader)
 			for _, si := range fdiw.shards {
 				tp := newShardTabletProvider(fdiw.tsc, fdiw.tabletTracker, si.Keyspace(), si.ShardName(), fdiw.tabletType)
@@ -489,7 +488,9 @@ func (fdiw *FindDuplicateIdsWorker) findDuplicateIds(ctx context.Context) error 
 				sourceReaders[tp.description()] = sourceResultReader
 			}
 
-			idsGroupedByShard := make(map[uint64][]string)
+			shardsGroupedById := make(map[uint64][]string)
+			customerIdsGroupedById := make(map[uint64][]uint64)
+			tokensGroupedById := make(map[uint64][]string)
 			for shard, sourceReader := range sourceReaders {
 				rowReader := NewRowReader(sourceReader)
 				for {
@@ -507,22 +508,31 @@ func (fdiw *FindDuplicateIdsWorker) findDuplicateIds(ctx context.Context) error 
 						processError("%v: sqltypes.ToUint64 failed: %v", errPrefix, err)
 						return
 					}
-					idsGroupedByShard[id] = append(idsGroupedByShard[id], shard)
+					customerId, err := sqltypes.ToUint64(row[1])
+					token := row[2].String()
+					shardsGroupedById[id] = append(shardsGroupedById[id], shard)
+					customerIdsGroupedById[id] = append(customerIdsGroupedById[id], customerId)
+					tokensGroupedById[id] = append(tokensGroupedById[id], token)
 				}
 			}
 
-			countDupes := 0
-			for id, shards := range idsGroupedByShard {
-				if len(shards) > 1 {
-					countDupes++
-					fdiw.wr.Logger().Errorf("Found duplicate id %v in shards %v", id, strings.Join(shards, ", "))
+			localFoundDupes := 0
+			for id, shards := range shardsGroupedById {
+				tokens := tokensGroupedById[id]
+				if len(shards) > 1 && countUnique(tokens) > 1 {
+					localFoundDupes++
+					customerIds := customerIdsGroupedById[id]
+					fdiw.wr.Logger().Errorf("duplicate id found: " +
+						"table=%v, id=%v, shards=%v, customer_ids=%v, tokens=%v",
+						fdiw.table, id, shards, customerIds, tokens)
 				}
 			}
-			if countDupes == 0 {
-				fdiw.wr.Logger().Infof("No duplicate ids! Yay!")
-			} else {
-				fdiw.wr.Logger().Errorf("Found %v duplicate ids", countDupes)
+			if localFoundDupes > 0 {
+				fdiw.wr.Logger().Errorf("dupes in chunk: %v", localFoundDupes)
 			}
+			mu.Lock()
+			foundDupes += localFoundDupes
+			mu.Unlock()
 		}(c)
 	}
 	sourceWaitGroup.Wait()
@@ -531,7 +541,17 @@ func (fdiw *FindDuplicateIdsWorker) findDuplicateIds(ctx context.Context) error 
 		return firstError
 	}
 
+	fdiw.wr.Logger().Errorf("total duplicate ids: %v", foundDupes)
+
 	return firstError
+}
+
+func countUnique(tokens []string) int {
+	set := make(map[string]bool)
+	for _, token := range tokens {
+		set[token] = true
+	}
+	return len(set)
 }
 
 func (fdiw *FindDuplicateIdsWorker) getSchema(ctx context.Context, tablet *topodatapb.Tablet) (*tabletmanagerdatapb.SchemaDefinition, error) {
